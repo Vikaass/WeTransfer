@@ -1,2 +1,1 @@
-# WeTransfer
-WebApp made for Microsoft Code.Fun.Do
+App made for CodeFunDo
