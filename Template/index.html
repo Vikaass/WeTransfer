@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <title>onedrive explorer</title>
+  <link rel="stylesheet" type="text/css" href="/static/css/style.css"/>
+  <script type="text/javascript" src="https://code.jquery.com/jquery-1.11.1.min.js"></script>
+  <script id="odauth" src="/static/js/odauth.js"></script>
+
+  <script>
+    function signInToOneDrive()
+    {
+      var appInfo = null;
+
+      if (getQueryVariable("usev2auth") == 1)
+      {
+        // Use v2.0 auth end point and scopes
+       appInfo = {
+          "clientId": "af526c3f-86b7-4485-a556-22aa94582943",
+          "redirectUri": "http://localhost:5000/callback",
+          "resourceUri": "https://graph.microsoft.com",
+          "authServiceUri": "https://login.microsoftonline.com/common/oauth2/authorize"
+        };
+      }
+      else
+      {
+        // Use the v1.0 auth end point and explicitly defined permissions (no scope)
+        
+        appInfo = {
+          "clientId": "af526c3f-86b7-4485-a556-22aa94582943",
+          "redirectUri": "http://localhost:5000/callback",
+          "scopes": "onedrive.readwrite wl.signin onedrive.appfolder",
+          "authServiceUri": "https://login.live.com/oauth20_authorize.srf"
+        };
+      }
+
+
+      provideAppInfo(appInfo);
+
+      oneDriveApiRoot = "https://graph.microsoft.com/beta/me";
+      showThumbnails = true;
+      // setOneDriveTitle("OneDrive");
+      challengeForAuth();
+
+      saveToCookie( { "apiRoot": oneDriveApiRoot, "thumbs": showThumbnails, "signedin": true } );
+      return false;
+    }
+
+    function showCustomLoginButton(show)
+    {
+      var loginButton = document.getElementById("od-login");
+      loginButton.style.display = show ? "block" : "none";
+
+      var logoutButton = document.getElementById("od-logoff");
+      logoutButton.style.display = show ? "none" : "block";
+    }
+
+    function getUrlParts(url)
+    {
+      var a = document.createElement("a");
+      a.href = url;
+
+      return { "hostname": a.hostname,
+               "path": a.pathname }
+    }
+
+    function setOneDriveTitle(title)
+    {
+        var element = document.getElementById("od-site");
+        element.innerText = title;
+    }
+
+
+    function saveToCookie(obj)
+    {
+      var expiration = new Date();
+      expiration.setTime(expiration.getTime() + 3600 * 1000);
+      var data = JSON.stringify(obj);
+      var cookie = "odexplorer=" + data +"; path=/; expires=" + expiration.toUTCString();
+
+      if (document.location.protocol.toLowerCase() == "https") {
+        cookie = cookie + ";secure";
+      }
+      document.cookie = cookie;
+    }
+
+    function loadFromCookie()
+    {
+      var cookies = document.cookie;
+      var name = "odexplorer=";
+      var start = cookies.indexOf(name);
+      if (start >= 0) {
+        start += name.length;
+        var end = cookies.indexOf(';', start);
+        if (end < 0) {
+          end = cookies.length;
+        }
+        else {
+          postCookie = cookies.substring(end);
+        }
+
+        var value = cookies.substring(start, end);
+        return JSON.parse(value);
+      }
+
+      return "";
+    }
+
+    function signOut()
+    {
+      logoutOfAuth();
+      saveToCookie( { "apiRoot": oneDriveApiRoot, "thumbs": showThumbnails, "signedin": false } );
+      $('#od-breadcrumb').empty();
+      $('#od-items').empty();
+      $('#od-json').empty();
+      location.reload();
+    }
+
+    function getQueryVariable(variable)
+    {
+       var query = window.location.search.substring(1);
+       var vars = query.split("&");
+       for (var i=0;i<vars.length;i++) {
+               var pair = vars[i].split("=");
+               if(pair[0] == variable){return pair[1];}
+       }
+       return(false);
+     }
+  </script>
+</head>
+<body>
+  <br><br><br><br><br><br><br><br><br><br><br><br><br>
+  <center>
+  <div id="wt"><img src="/static/images/wetransfer.jpg" ></div>
+  <br><br><br><br><br><br><br><br><br><br><br>
+  <div id="od-login" style="display: hidden">
+    <a href="#" onclick="signInToOneDrive()"><img src="/static/images/windows.jpg" ></a>&nbsp;&nbsp;
+  </div>
+  <div id="od-logoff" style="display: hidden">
+    <a href="login"><img src="/static/images/enter.jpg" ></a><br>
+    <a href="#" onclick="signOut()"><img src="/static/images/signout.jpg" ></a>
+  </div>
+  </center>
+  <div id="od-loading"></div>
+  <div id="od-breadcrumb"></div>
+  <div id="od-content">
+    <div id="od-items" class="od-pagecol"></div>
+    <div id="od-json" class="od-pagecol"></div>
+  </div>
+  <script>
+    var oneDriveApiRoot = "https://graph.microsoft.com/beta/me";
+    var showThumbnails = true;
+
+    var data = loadFromCookie();
+    if (data)
+    {
+      oneDriveApiRoot = data.apiRoot;
+      showThumbnails = data.thumbs;
+      showCustomLoginButton(!data.signedin)
+    }
+
+    // we use the url fragment to specify the file path within onedrive
+    // (eg. #/pictures/foo.jpg), so we bind to the hashchange event to
+    // know when it changes. in cases where we change the hash from
+    // within this app due to a user click, we call odauth ourselves and
+    // pre-set loadedFromHash to the new value so that this handler doesn't
+    // call odauth() again. this is so that we handle the auth popup properly.
+    // odauth can either be called in response to a user click (in which)
+    // case it's allowed to pop up an auth dialog, or with no user click,
+    // in which case it's only allowed to show a 'sign-in' button (if it
+    // tried to pop up a window, most browsers' popup blockers would block it).
+    // this handler needs to call odauth in non-click mode since it doesn't
+    // know why the hash changed.
+    var loadedForHash = "";
+    $(window).bind('hashchange', function() {
+      if (window.location.hash != loadedForHash) {
+        loadedForHash = window.location.hash;
+        odauth();
+      }
+
+     return false;
+    });
+
+    // we bind to jquery's ajax start/stop events so that we can style the
+    // page differently when a network call is being made
+    $(document).on({
+      ajaxStart: function() {$('body').addClass('loading');},
+      ajaxStop:  function() {$('body').removeClass('loading');}
+    });
+
+    // based on http://jsfiddle.net/KJQ9K/554/
+    function syntaxHighlight(obj) {
+      var json = JSON.stringify(obj, undefined, 2)
+      json = json.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      return json.replace(/("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g,
+        function (match) {
+          var cls = 'number';
+          if (/^"/.test(match)) {
+            if (/:$/.test(match)) {
+              cls = 'key';
+            } else {
+              cls = 'string';
+            }
+          } else if (/true|false/.test(match)) {
+            cls = 'boolean';
+          } else if (/null/.test(match)) {
+            cls = 'null';
+          }
+          return '<span class="' + cls + '">' + match + '</span>';
+        });
+    }
+
+    // called to update the breadcrumb bar at the top of the page
+    function updateBreadcrumb(decodedPath) {
+      var path = decodedPath || '';
+      $('#od-breadcrumb').empty();
+      var runningPath = '';
+      var segments = path.split('/');
+      for (var i = 0 ; i < segments.length; i++) {
+        if (i > 0) {
+          $('<span>').text(' > ').appendTo("#od-breadcrumb");
+        }
+
+        var segment = segments[i];
+        if (segment) {
+          runningPath = runningPath + '/' + encodeURIComponent(segment);
+        } else {
+          segment = 'root';
+        }
+
+        $('<a>').
+          attr("href", "#" + runningPath).
+          click(function() {
+            // when the page changes in response to a user click,
+            // we set loadedForHash to the new value and call
+            // odauth ourselves in user-click mode. this causes
+            // the catch-all hashchange event handler not to
+            // process the page again. see comment at the top.
+            loadedForHash = $(this).attr('href');
+            window.location = loadedForHash;
+            odauth(true);
+          }).
+          text(segment).
+          appendTo("#od-breadcrumb");
+      }
+    }
+
+    // odauth calls our onAuthenticated method to give us the user's auth token.
+    // in this demo app we just use this as the method to drive the page logic
+    function onAuthenticated(token, authWindow) {
+      if (token) {
+        if (authWindow) {
+          removeLoginButton();
+          authWindow.close();
+        }
+
+        
+      }
+      else {
+        alert("Error signing in");
+      }
+    }
+
+    // start the whole thing off by calling odauth() in non-click mode.
+    // if the user isn't logged in already, a sign-in link will appear
+    // for them to click.
+    odauth();
+  </script>
+</body>
+</html>
